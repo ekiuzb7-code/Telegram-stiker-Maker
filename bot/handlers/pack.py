@@ -1,4 +1,4 @@
-"""Stiker-pack boshqaruvi: yaratish, qo'shish, /mypacks, /delpack, /cancel."""
+"""Stiker-pack boshqaruvi: yaratish, qo'shish, /mypacks, /delsticker, /delpack, /cancel."""
 
 import logging
 
@@ -15,22 +15,52 @@ from aiogram.types import (
 )
 
 from bot.handlers.media import build_sticker
-from bot.services.packs import get_existing_pack, pack_name
+from bot.services.packs import discover_packs, get_existing_pack, next_pack_name
 from bot.states import CreatePack
 
 logger = logging.getLogger(__name__)
 router = Router(name="pack")
 
-DELETE_KB = InlineKeyboardMarkup(inline_keyboard=[
-    [
-        InlineKeyboardButton(text="🗑 Ha, o'chirish", callback_data="delpack:yes"),
-        InlineKeyboardButton(text="❌ Bekor", callback_data="delpack:no"),
-    ],
-])
-
 
 def register(dp: Dispatcher) -> None:
     dp.include_router(router)
+
+
+def pack_select_kb(packs, prefix: str) -> InlineKeyboardMarkup:
+    """Packlar ro'yxati — inline tugmalar."""
+    rows = []
+    for name, pack in packs:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"📦 {pack.title} ({len(pack.stickers)} ta)",
+                callback_data=f"{prefix}:{name}",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---- Packga qo'shish: pack tanlash va emoji ----
+
+@router.callback_query(F.data.startswith("topack:"))
+async def choose_pack(callback: CallbackQuery, state: FSMContext) -> None:
+    name = callback.data.split(":", 1)[1]
+    pack = await get_existing_pack(callback.bot, name)
+    if not pack:
+        await callback.answer("Pack topilmadi", show_alert=True)
+        return
+    await state.update_data(pack_name=name)
+    await state.set_state(CreatePack.emoji)
+    await callback.message.answer(
+        f"📦 «{pack.title}» packiga qo'shaman. 🙂 Bitta emoji yuboring:"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "newpack")
+async def new_pack(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(CreatePack.title)
+    await callback.message.answer("📦 Yangi pack nomini yozing:")
+    await callback.answer()
 
 
 @router.message(CreatePack.title)
@@ -68,20 +98,23 @@ async def on_emoji(message: Message, bot: Bot, state: FSMContext) -> None:
         return
 
     me = await bot.get_me()
-    name = pack_name(message.from_user.id, me.username)
-    existing = await get_existing_pack(bot, name)
     sticker = InputSticker(sticker=sticker_file, emoji_list=[emoji], format=fmt)
-    pack_url = f"https://t.me/addstickers/{name}"
+    target_name = data.get("pack_name")
 
     try:
-        if existing:
+        if target_name:
+            existing = await get_existing_pack(bot, target_name)
+            if not existing:
+                await message.answer("⚠️ Pack topilmadi. Qaytadan urinib ko'ring.")
+                return
             before = len(existing.stickers)
             await bot.add_sticker_to_set(
-                user_id=message.from_user.id, name=name, sticker=sticker
+                user_id=message.from_user.id, name=target_name, sticker=sticker
             )
             # Telegram dublikat stikerni qo'shmaydi — haqiqiy sonni tekshiramiz
-            updated = await get_existing_pack(bot, name)
+            updated = await get_existing_pack(bot, target_name)
             after = len(updated.stickers) if updated else before
+            pack_url = f"https://t.me/addstickers/{target_name}"
             if after > before:
                 await message.answer(
                     f"✅ Stiker qo'shildi (packda jami {after} ta): {pack_url}"
@@ -92,13 +125,19 @@ async def on_emoji(message: Message, bot: Bot, state: FSMContext) -> None:
                     f"qo'shilmaydi). Packda jami {after} ta: {pack_url}"
                 )
         else:
+            name = await next_pack_name(bot, message.from_user.id, me.username)
+            if not name:
+                await message.answer("⚠️ Packlar soni chegaraga yetdi (20 ta).")
+                return
             await bot.create_new_sticker_set(
                 user_id=message.from_user.id,
                 name=name,
                 title=data.get("title", "Stikerlarim"),
                 stickers=[sticker],
             )
-            await message.answer(f"🎉 Pack yaratildi: {pack_url}")
+            await message.answer(
+                f"🎉 Pack yaratildi: https://t.me/addstickers/{name}"
+            )
     except TelegramBadRequest as e:
         logger.exception("Pack amaliyotida Telegram xatosi")
         await message.answer(f"⚠️ Telegram xatosi: {e.message}")
@@ -109,70 +148,82 @@ async def on_emoji(message: Message, bot: Bot, state: FSMContext) -> None:
         await state.clear()
 
 
+# ---- Packlarni ko'rish ----
+
 @router.message(Command("mypacks"))
 async def mypacks(message: Message, bot: Bot) -> None:
     me = await bot.get_me()
-    name = pack_name(message.from_user.id, me.username)
-    pack = await get_existing_pack(bot, name)
-    if not pack:
+    packs = await discover_packs(bot, message.from_user.id, me.username)
+    if not packs:
         await message.answer(
             "📭 Sizda hali pack yo'q. Media yuborib, «📦 Packga qo'shish» tugmasini bosing."
         )
         return
-    # Diagnostika uchun har bir stiker emojisini ko'rsatamiz
-    emoji_list = " ".join(s.emoji or "❓" for s in pack.stickers[:20])
-    await message.answer(
-        f"📦 <b>{pack.title}</b>\n"
-        f"Stikerlar soni: {len(pack.stickers)} ta\n"
-        f"Stikerlar: {emoji_list}\n"
-        f"Havola: https://t.me/addstickers/{name}\n\n"
-        "Agar havolada kamroq ko'rinsa, Telegram keshi sabab bo'lishi mumkin — "
-        "havolani boshqa qurilmada yoki 1–2 daqiqadan keyin ochib ko'ring."
-    )
+    blocks = []
+    for name, pack in packs:
+        emoji_list = " ".join(s.emoji or "❓" for s in pack.stickers[:10])
+        blocks.append(
+            f"📦 <b>{pack.title}</b> — {len(pack.stickers)} ta\n"
+            f"   {emoji_list}\n"
+            f"   https://t.me/addstickers/{name}"
+        )
+    await message.answer("\n\n".join(blocks))
 
+
+# ---- Stikerni o'chirish (avval pack, keyin stiker tanlanadi) ----
 
 @router.message(Command("delsticker"))
 async def delsticker(message: Message, bot: Bot) -> None:
     me = await bot.get_me()
-    name = pack_name(message.from_user.id, me.username)
-    pack = await get_existing_pack(bot, name)
-    if not pack:
+    packs = await discover_packs(bot, message.from_user.id, me.username)
+    if not packs:
         await message.answer("📭 Sizda pack yo'q.")
         return
+    await message.answer(
+        "Qaysi packdan stiker o'chiray?",
+        reply_markup=pack_select_kb(packs, "delstickerpick"),
+    )
 
-    # Har stiker uchun inline tugma: emoji + tartib raqami
+
+@router.callback_query(F.data.startswith("delstickerpick:"))
+async def delsticker_pick(callback: CallbackQuery) -> None:
+    name = callback.data.split(":", 1)[1]
+    pack = await get_existing_pack(callback.bot, name)
+    if not pack:
+        await callback.answer("Pack topilmadi", show_alert=True)
+        return
     rows = []
     for i, s in enumerate(pack.stickers[:20]):
         rows.append([
             InlineKeyboardButton(
                 text=f"🗑 {i + 1}. {s.emoji or '❓'}",
-                callback_data=f"delsticker:{i}",
+                callback_data=f"delsticker:{name}:{i}",
             )
         ])
     rows.append([InlineKeyboardButton(text="❌ Bekor", callback_data="delsticker:no")])
-    await message.answer(
+    await callback.message.answer(
         f"📦 «{pack.title}» — qaysi stikerni o'chiray? (jami {len(pack.stickers)} ta)",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("delsticker:"))
-async def delsticker_confirm(callback: CallbackQuery, bot: Bot) -> None:
+async def delsticker_confirm(callback: CallbackQuery) -> None:
     if callback.data == "delsticker:no":
         await callback.answer("Bekor qilindi")
         return
 
-    index = int(callback.data.split(":", 1)[1])
-    me = await bot.get_me()
-    name = pack_name(callback.from_user.id, me.username)
-    pack = await get_existing_pack(bot, name)
+    _, name, idx = callback.data.split(":", 2)
+    index = int(idx)
+    pack = await get_existing_pack(callback.bot, name)
     if not pack or index >= len(pack.stickers):
         await callback.answer("Pack o'zgargan. Qaytadan /delsticker bosing.", show_alert=True)
         return
 
     sticker = pack.stickers[index]
     try:
-        await bot.delete_sticker_from_set(sticker=sticker.file_id)
+        await callback.bot.delete_sticker_from_set(sticker=sticker.file_id)
         await callback.message.answer(
             f"🗑 {index + 1}-stiker ({sticker.emoji or '❓'}) o'chirildi. "
             f"Packda endi {len(pack.stickers) - 1} ta qoldi."
@@ -182,29 +233,49 @@ async def delsticker_confirm(callback: CallbackQuery, bot: Bot) -> None:
     await callback.answer()
 
 
+# ---- Packni o'chirish (avval pack tanlanadi) ----
+
 @router.message(Command("delpack"))
 async def delpack(message: Message, bot: Bot) -> None:
     me = await bot.get_me()
-    name = pack_name(message.from_user.id, me.username)
-    pack = await get_existing_pack(bot, name)
-    if not pack:
+    packs = await discover_packs(bot, message.from_user.id, me.username)
+    if not packs:
         await message.answer("📭 Sizda pack yo'q.")
         return
     await message.answer(
-        f"🗑 «{pack.title}» packini o'chiraymi? Buni qaytarib bo'lmaydi!",
-        reply_markup=DELETE_KB,
+        "Qaysi packni o'chiray? Buni qaytarib bo'lmaydi!",
+        reply_markup=pack_select_kb(packs, "delpackpick"),
     )
 
 
+@router.callback_query(F.data.startswith("delpackpick:"))
+async def delpack_pick(callback: CallbackQuery) -> None:
+    name = callback.data.split(":", 1)[1]
+    pack = await get_existing_pack(callback.bot, name)
+    if not pack:
+        await callback.answer("Pack topilmadi", show_alert=True)
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🗑 Ha, o'chirish", callback_data=f"delpack:{name}:yes"),
+            InlineKeyboardButton(text="❌ Bekor", callback_data="delpack:no"),
+        ],
+    ])
+    await callback.message.answer(
+        f"🗑 «{pack.title}» packini o'chiraymi? Buni qaytarib bo'lmaydi!",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("delpack:"))
-async def delpack_confirm(callback: CallbackQuery, bot: Bot) -> None:
+async def delpack_confirm(callback: CallbackQuery) -> None:
     if callback.data == "delpack:no":
         await callback.answer("Bekor qilindi")
         return
-    me = await bot.get_me()
-    name = pack_name(callback.from_user.id, me.username)
+    name = callback.data.split(":", 2)[1]
     try:
-        await bot.delete_sticker_set(name)
+        await callback.bot.delete_sticker_set(name)
         await callback.message.answer("🗑 Pack o'chirildi.")
     except TelegramBadRequest as e:
         await callback.message.answer(f"⚠️ O'chirishda xato: {e.message}")

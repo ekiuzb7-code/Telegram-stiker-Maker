@@ -19,7 +19,7 @@ from aiogram.types import (
 from PIL import Image
 
 from bot.services import bgremove, image, video
-from bot.services.packs import get_existing_pack, pack_name
+from bot.services.packs import discover_packs
 from bot.states import CreatePack, PickColor
 
 logger = logging.getLogger(__name__)
@@ -154,13 +154,23 @@ async def on_action(callback: CallbackQuery, bot: Bot, state: FSMContext) -> Non
 
     if action == "pack":
         me = await bot.get_me()
-        name = pack_name(callback.from_user.id, me.username)
-        existing = await get_existing_pack(bot, name)
-        if existing:
-            # Pack allaqachon bor — faqat emoji so'rab, o'sha packga qo'shamiz
-            await state.set_state(CreatePack.emoji)
+        packs = await discover_packs(bot, callback.from_user.id, me.username)
+        if packs:
+            # Mavjud packlar ro'yxati + yangi pack yaratish
+            rows = []
+            for name, pack in packs:
+                rows.append([
+                    InlineKeyboardButton(
+                        text=f"📦 {pack.title} ({len(pack.stickers)} ta)",
+                        callback_data=f"topack:{name}",
+                    )
+                ])
+            rows.append([
+                InlineKeyboardButton(text="➕ Yangi pack yaratish", callback_data="newpack")
+            ])
             await callback.message.answer(
-                f"📦 «{existing.title}» packiga qo'shaman. 🙂 Bitta emoji yuboring:"
+                "Qaysi packga qo'shay?",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
             )
         else:
             await state.set_state(CreatePack.title)
