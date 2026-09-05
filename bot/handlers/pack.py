@@ -75,12 +75,22 @@ async def on_emoji(message: Message, bot: Bot, state: FSMContext) -> None:
 
     try:
         if existing:
+            before = len(existing.stickers)
             await bot.add_sticker_to_set(
                 user_id=message.from_user.id, name=name, sticker=sticker
             )
-            await message.answer(
-                f"✅ Stiker qo'shildi (packda jami {len(existing.stickers) + 1} ta): {pack_url}"
-            )
+            # Telegram dublikat stikerni qo'shmaydi — haqiqiy sonni tekshiramiz
+            updated = await get_existing_pack(bot, name)
+            after = len(updated.stickers) if updated else before
+            if after > before:
+                await message.answer(
+                    f"✅ Stiker qo'shildi (packda jami {after} ta): {pack_url}"
+                )
+            else:
+                await message.answer(
+                    "⚠️ Bu stiker packda allaqachon bor (bir xil rasm qayta "
+                    f"qo'shilmaydi). Packda jami {after} ta: {pack_url}"
+                )
         else:
             await bot.create_new_sticker_set(
                 user_id=message.from_user.id,
