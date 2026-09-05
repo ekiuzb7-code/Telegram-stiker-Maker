@@ -13,7 +13,7 @@ HELP_TEXT = (
     "🎬 <b>Video</b> yuborsangiz — video stikerga aylantiraman.\n\n"
     "<b>Buyruqlar:</b>\n"
     "/mypacks — packlaringizni ko'rish\n"
-    "/delsticker — packdan bitta stikerni o'chirish\n"
+    "/delsticker — stikerlarni o'chirish\n"
     "/delpack — butun packni o'chirish\n"
     "/cancel — davom etayotgan amalni bekor qilish\n"
     "/help — yordam\n\n"
