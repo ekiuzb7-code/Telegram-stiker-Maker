@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from bot import main; print\\('import OK'\\)\")",
+      "Bash(python -m pytest tests/ -q)"
+    ]
+  }
+}

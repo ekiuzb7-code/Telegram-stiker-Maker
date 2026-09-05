@@ -19,6 +19,7 @@ from aiogram.types import (
 from PIL import Image
 
 from bot.services import bgremove, image, video
+from bot.services.packs import get_existing_pack, pack_name
 from bot.states import CreatePack, PickColor
 
 logger = logging.getLogger(__name__)
@@ -152,8 +153,18 @@ async def on_action(callback: CallbackQuery, bot: Bot, state: FSMContext) -> Non
         return
 
     if action == "pack":
-        await state.set_state(CreatePack.title)
-        await callback.message.answer("📦 Pack nomini yozing:")
+        me = await bot.get_me()
+        name = pack_name(callback.from_user.id, me.username)
+        existing = await get_existing_pack(bot, name)
+        if existing:
+            # Pack allaqachon bor — faqat emoji so'rab, o'sha packga qo'shamiz
+            await state.set_state(CreatePack.emoji)
+            await callback.message.answer(
+                f"📦 «{existing.title}» packiga qo'shaman. 🙂 Bitta emoji yuboring:"
+            )
+        else:
+            await state.set_state(CreatePack.title)
+            await callback.message.answer("📦 Yangi pack nomini yozing:")
         await callback.answer()
         return
 

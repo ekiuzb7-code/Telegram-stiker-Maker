@@ -1,17 +1,32 @@
-"""Stiker-pack yaratish va packga qo'shish (stateless, deterministik nom)."""
+"""Stiker-pack boshqaruvi: yaratish, qo'shish, /mypacks, /delpack, /cancel."""
 
 import logging
 
-from aiogram import Bot, Dispatcher, Router
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InputSticker, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputSticker,
+    Message,
+)
 
 from bot.handlers.media import build_sticker
+from bot.services.packs import get_existing_pack, pack_name
 from bot.states import CreatePack
 
 logger = logging.getLogger(__name__)
 router = Router(name="pack")
+
+DELETE_KB = InlineKeyboardMarkup(inline_keyboard=[
+    [
+        InlineKeyboardButton(text="🗑 Ha, o'chirish", callback_data="delpack:yes"),
+        InlineKeyboardButton(text="❌ Bekor", callback_data="delpack:no"),
+    ],
+])
 
 
 def register(dp: Dispatcher) -> None:
@@ -42,8 +57,6 @@ async def on_emoji(message: Message, bot: Bot, state: FSMContext) -> None:
         await message.answer("⚠️ Avval media yuboring.")
         return
 
-    await state.clear()
-
     try:
         sticker_file, fmt = await build_sticker(bot, data)
     except Exception:
@@ -52,26 +65,82 @@ async def on_emoji(message: Message, bot: Bot, state: FSMContext) -> None:
         return
 
     me = await bot.get_me()
-    name = f"stikerbot_{message.from_user.id}_by_{me.username}"
+    name = pack_name(message.from_user.id, me.username)
+    existing = await get_existing_pack(bot, name)
     sticker = InputSticker(sticker=sticker_file, emoji_list=[emoji], format=fmt)
     pack_url = f"https://t.me/addstickers/{name}"
 
     try:
-        try:
+        if existing:
             await bot.add_sticker_to_set(
                 user_id=message.from_user.id, name=name, sticker=sticker
             )
-            await message.answer(f"✅ Stiker packga qo'shildi: {pack_url}")
-        except TelegramBadRequest as e:
-            if "STICKERSET_INVALID" in str(e).upper():
-                await bot.create_new_sticker_set(
-                    user_id=message.from_user.id,
-                    name=name,
-                    title=data.get("title", "Stikerlarim"),
-                    stickers=[sticker],
-                )
-                await message.answer(f"🎉 Pack yaratildi: {pack_url}")
-            else:
-                raise
+            await state.clear()
+            await message.answer(
+                f"✅ Stiker qo'shildi (packda jami {existing.sticker_count + 1} ta): {pack_url}"
+            )
+        else:
+            await bot.create_new_sticker_set(
+                user_id=message.from_user.id,
+                name=name,
+                title=data.get("title", "Stikerlarim"),
+                stickers=[sticker],
+            )
+            await state.clear()
+            await message.answer(f"🎉 Pack yaratildi: {pack_url}")
     except TelegramBadRequest as e:
+        logger.exception("Pack amaliyotida Telegram xatosi")
+        await state.clear()
         await message.answer(f"⚠️ Telegram xatosi: {e.message}")
+
+
+@router.message(Command("mypacks"))
+async def mypacks(message: Message, bot: Bot) -> None:
+    me = await bot.get_me()
+    name = pack_name(message.from_user.id, me.username)
+    pack = await get_existing_pack(bot, name)
+    if not pack:
+        await message.answer(
+            "📭 Sizda hali pack yo'q. Media yuborib, «📦 Packga qo'shish» tugmasini bosing."
+        )
+        return
+    await message.answer(
+        f"📦 <b>{pack.title}</b>\n"
+        f"Stikerlar soni: {pack.sticker_count} ta\n"
+        f"Havola: https://t.me/addstickers/{name}"
+    )
+
+
+@router.message(Command("delpack"))
+async def delpack(message: Message, bot: Bot) -> None:
+    me = await bot.get_me()
+    name = pack_name(message.from_user.id, me.username)
+    pack = await get_existing_pack(bot, name)
+    if not pack:
+        await message.answer("📭 Sizda pack yo'q.")
+        return
+    await message.answer(
+        f"🗑 «{pack.title}» packini o'chiraymi? Buni qaytarib bo'lmaydi!",
+        reply_markup=DELETE_KB,
+    )
+
+
+@router.callback_query(F.data.startswith("delpack:"))
+async def delpack_confirm(callback: CallbackQuery, bot: Bot) -> None:
+    if callback.data == "delpack:no":
+        await callback.answer("Bekor qilindi")
+        return
+    me = await bot.get_me()
+    name = pack_name(callback.from_user.id, me.username)
+    try:
+        await bot.delete_sticker_set(name)
+        await callback.message.answer("🗑 Pack o'chirildi.")
+    except TelegramBadRequest as e:
+        await callback.message.answer(f"⚠️ O'chirishda xato: {e.message}")
+    await callback.answer()
+
+
+@router.message(Command("cancel"))
+async def cancel(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("❌ Amal bekor qilindi.")
