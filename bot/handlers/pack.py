@@ -48,7 +48,10 @@ async def on_title(message: Message, state: FSMContext) -> None:
 async def on_emoji(message: Message, bot: Bot, state: FSMContext) -> None:
     emoji = (message.text or "").strip()
     if not emoji:
-        await message.answer("⚠️ Emoji yuboring.")
+        await message.answer(
+            "⚠️ Oddiy matn emoji yuboring (masalan 😀). "
+            "Stiker yoki custom emoji qabul qilinmaydi."
+        )
         return
 
     data = await state.get_data()
@@ -75,9 +78,8 @@ async def on_emoji(message: Message, bot: Bot, state: FSMContext) -> None:
             await bot.add_sticker_to_set(
                 user_id=message.from_user.id, name=name, sticker=sticker
             )
-            await state.clear()
             await message.answer(
-                f"✅ Stiker qo'shildi (packda jami {existing.sticker_count + 1} ta): {pack_url}"
+                f"✅ Stiker qo'shildi (packda jami {len(existing.stickers) + 1} ta): {pack_url}"
             )
         else:
             await bot.create_new_sticker_set(
@@ -86,12 +88,15 @@ async def on_emoji(message: Message, bot: Bot, state: FSMContext) -> None:
                 title=data.get("title", "Stikerlarim"),
                 stickers=[sticker],
             )
-            await state.clear()
             await message.answer(f"🎉 Pack yaratildi: {pack_url}")
     except TelegramBadRequest as e:
         logger.exception("Pack amaliyotida Telegram xatosi")
-        await state.clear()
         await message.answer(f"⚠️ Telegram xatosi: {e.message}")
+    except Exception:
+        logger.exception("Pack amaliyotida kutilmagan xato")
+        await message.answer("⚠️ Xatolik yuz berdi. Qaytadan urinib ko'ring.")
+    finally:
+        await state.clear()
 
 
 @router.message(Command("mypacks"))
@@ -106,7 +111,7 @@ async def mypacks(message: Message, bot: Bot) -> None:
         return
     await message.answer(
         f"📦 <b>{pack.title}</b>\n"
-        f"Stikerlar soni: {pack.sticker_count} ta\n"
+        f"Stikerlar soni: {len(pack.stickers)} ta\n"
         f"Havola: https://t.me/addstickers/{name}"
     )
 
